@@ -51,19 +51,23 @@ function App() {
     line = line.trim();
     if (!line) return;
 
-    if (line.startsWith('FREQ:')) {
-      const val = parseFloat(line.substring(5));
-      if (!isNaN(val)) {
-        setLiveFreq(val);
-        appendChartData(val);
-      }
-    } else if (line.startsWith('ITER:')) {
-      // Expected format: ITER:1,RESULT:45.0
-      try {
-        const parts = line.split(',');
-        const iterNum = parseInt(parts[0].split(':')[1]);
-        const result = parseFloat(parts[1].split(':')[1]);
-        
+    // 1. Check for Average
+    const avgMatch = line.match(/^(?:AVG:|Average Frequency:\s*)([\d.]+)/i);
+    if (avgMatch) {
+      const val = parseFloat(avgMatch[1]);
+      if (!isNaN(val)) setAverage(val);
+      return;
+    }
+
+    // 2. Check for Iteration/Reading format
+    const iterMatchLegacy = line.match(/^ITER:(\d+),RESULT:([\d.]+)/i);
+    const iterMatchReading = line.match(/^Reading\s+(\d+):\s*([\d.]+)/i);
+    
+    if (iterMatchLegacy || iterMatchReading) {
+      const iterNum = parseInt(iterMatchLegacy ? iterMatchLegacy[1] : iterMatchReading[1], 10);
+      const result = parseFloat(iterMatchLegacy ? iterMatchLegacy[2] : iterMatchReading[2]);
+      
+      if (!isNaN(iterNum) && !isNaN(result)) {
         setIterations(prev => {
           const newIters = [...prev];
           if (iterNum >= 1 && iterNum <= 3) {
@@ -72,24 +76,42 @@ function App() {
           return newIters;
         });
 
-        // Mark the most recent point as a CFF point
+        // Add this to chart data as a CFF point
         setChartData(prev => {
-          if (prev.length === 0) return prev;
-          const newData = [...prev];
-          newData[newData.length - 1] = {
-            ...newData[newData.length - 1],
-            isCFF: true,
-            cffLabel: `Iter ${iterNum}`
-          };
+          const now = new Date();
+          const timeStr = `${now.getSeconds()}.${now.getMilliseconds()}`.substring(0, 4);
+          const newData = [...prev, { time: timeStr, freq: result, isCFF: true, cffLabel: `Iter ${iterNum}` }];
+          if (newData.length > MAX_DATA_POINTS) {
+            return newData.slice(newData.length - MAX_DATA_POINTS);
+          }
           return newData;
         });
-      } catch (e) {
-        console.error("Failed to parse iteration result:", line);
+        
+        // Also update live freq
+        setLiveFreq(result);
       }
-    } else if (line.startsWith('AVG:')) {
-      const val = parseFloat(line.substring(4));
-      if (!isNaN(val)) setAverage(val);
+      return;
     }
+
+    // 3. Status messages
+    if (/^Test Aborted/i.test(line) || /^Starting new test/i.test(line) || /^OLED failed/i.test(line)) {
+      console.log('Device message:', line);
+      return;
+    }
+
+    // 4. Check for live frequency data
+    // Matches "FREQ: 45.2", "45.2", "45.2 Hz", "Frequency: 45.2", etc.
+    const freqMatch = line.match(/(?:^|FREQ:|Frequency:|Freq:|Live:|Current:|\s)([\d.]+)(?:\s*Hz)?$/i);
+    if (freqMatch) {
+      const val = parseFloat(freqMatch[1]);
+      if (!isNaN(val)) {
+        setLiveFreq(val);
+        appendChartData(val);
+      }
+      return;
+    }
+
+    console.log('Unrecognized serial line:', line);
   };
 
   // ----- Web Serial API Integration -----
@@ -328,9 +350,9 @@ function App() {
             <div>
               <p className="mb-2"><strong>Arduino Setup:</strong> Ensure your Arduino prints exactly:</p>
               <ul style={{ paddingLeft: '1.2rem', fontFamily: 'monospace' }}>
-                <li>FREQ:45.2</li>
-                <li>ITER:1,RESULT:45.2</li>
-                <li>AVG:44.8</li>
+                <li>Reading 1: 45.2 Hz</li>
+                <li>Reading 2: 46.1 Hz</li>
+                <li>Average Frequency: 44.8 Hz</li>
               </ul>
             </div>
           </div>
